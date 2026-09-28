@@ -1,0 +1,67 @@
+{
+  "name": "@rayhan889/xstream",
+  "version": "0.1.0",
+  "description": "Web crawl engine to simulate near real-time stream from X API. Output clean NDJSON format.",
+  "bin": {
+    "xstream": "dist/cmd/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rayhan889/xstream.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rayhan889/xstream/issues"
+  },
+  "homepage": "https://github.com/rayhan889/xstream#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "tsx src/cmd/cli.ts",
+    "watch": "tsx watch src/cmd/cli.ts",
+    "check": "tsc --noEmit",
+    "build": "pnpm clean && tsc && tsc-alias",
+    "start": "node dist/cmd/cli.js",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "pnpm build",
+    "prepare": "husky"
+  },
+  "keywords": [
+    "xstream",
+    "web crawl",
+    "stream",
+    "ndjson",
+    "playwright"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.33.0",
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.3",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@types/node": "^26.6.3",
+    "husky": "^9.1.7",
+    "tsc-alias": "^1.9.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "dotenv": "^18.0.4",
+    "playwright": "^1.63.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "tslog": "^5.2.0",
+    "zod": "^4.6.5"
+  }
+}
