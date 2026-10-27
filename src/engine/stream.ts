@@ -4,17 +4,11 @@ import { Browser, BrowserContext, Page } from "playwright";
 import { Logger } from "tslog";
 import { createLogger } from "@/logger";
 import { launchBrowser } from "./browser";
-import { RequestTemplate, XInterceptor } from "./interceptor";
+import { XInterceptor } from "./interceptor";
 import { RateLimitTracker } from "./rate-limit";
 
 const MAX_SEEN_IDS = 10_000;
-const MAX_REFETCH_FAILURES = 3;
 const JITTER_RATIO = 0.1;
-
-interface RefetchResult {
-  status: number;
-  headers: Record<string, string>;
-}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -117,7 +111,6 @@ export class XStreamer {
 
   private async pollLoop(page: Page): Promise<void> {
     const signal = this.abortController.signal;
-    let failures = 0;
 
     while (!signal.aborted) {
       const delay = this.nextDelay();
@@ -125,28 +118,6 @@ export class XStreamer {
       await sleep(delay, signal);
       if (signal.aborted) break;
 
-      const template = this.interceptor.getTemplate();
-      if (template) {
-        const result = await this.refetch(page, template);
-        this.rateLimit.update(result.headers, result.status);
-
-        if (result.status === 200 || result.status === 429) {
-          failures = 0;
-          continue;
-        }
-
-        failures++;
-        this.logger.warn(
-          `In-page refetch failed (status ${result.status}), attempt ${failures}/${MAX_REFETCH_FAILURES}.`,
-        );
-        if (failures < MAX_REFETCH_FAILURES) continue;
-      }
-
-      this.logger.info(
-        "Reloading search page to capture a fresh request template.",
-      );
-      failures = 0;
-      this.interceptor.invalidTemplate();
       await this.reloadPage(page);
     }
   }
@@ -154,40 +125,6 @@ export class XStreamer {
   private nextDelay(): number {
     const base = this.rateLimit.nextDelay(this.minIntervalMs);
     return Math.round(base * (1 + Math.random() * JITTER_RATIO));
-  }
-
-  private async refetch(
-    page: Page,
-    template: RequestTemplate,
-  ): Promise<RefetchResult> {
-    const payload = {
-      url: template.url,
-      method: template.method,
-      headers: template.headers,
-      body: template.body?.toString("utf8") ?? null,
-    };
-
-    try {
-      return await page.evaluate(async ({ url, method, headers, body }) => {
-        const csrf = /(?:^|;\s*)ct0=([^;]+)/.exec(document.cookie)?.[1];
-        if (csrf) headers["x-csrf-token"] = csrf;
-
-        const response = await fetch(url, {
-          method,
-          headers,
-          body: body ?? undefined,
-          credentials: "include",
-        });
-        await response.text(); // wait for the full body before resolving
-        return {
-          status: response.status,
-          headers: Object.fromEntries(response.headers.entries()),
-        };
-      }, payload);
-    } catch (error) {
-      this.logger.warn(`In-page refetch threw: ${error}`);
-      return { status: 0, headers: {} };
-    }
   }
 
   private async reloadPage(page: Page): Promise<void> {

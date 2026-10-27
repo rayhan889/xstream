@@ -1,62 +1,17 @@
 import { Tweet } from "@/types";
-import { Page, Request as PWRequest } from "playwright";
+import { Page } from "playwright";
 import { createLogger } from "@/logger";
 import { parseTweetsFromResponse } from "@/engine/parser";
 import { RateLimitTracker } from "./rate-limit";
 
-export interface RequestTemplate {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body: Buffer<ArrayBufferLike> | null;
-}
-
-const UNREPLAYABLE_HEADERS = new Set([
-  "cookie",
-  "host",
-  "user-agent",
-  "referer",
-  "origin",
-  "content-length",
-  "connection",
-  "accept-encoding",
-]);
-
-async function buildTemplate(request: PWRequest): Promise<RequestTemplate> {
-  const rawHeaders = await request.allHeaders();
-  const headers = Object.fromEntries(
-    Object.entries(rawHeaders).filter(
-      ([name]) =>
-        !name.startsWith(":") &&
-        !name.startsWith("sec-") &&
-        !UNREPLAYABLE_HEADERS.has(name),
-    ),
-  );
-  return {
-    url: request.url(),
-    method: request.method(),
-    headers,
-    body: request.postDataBuffer(),
-  };
-}
-
 export class XInterceptor {
   private isAttached: boolean = false;
-  private template: RequestTemplate | null = null;
   private readonly logger = createLogger("X Interceptor");
 
   constructor(
     private readonly onTweets: (tweets: Tweet[]) => void,
     private readonly rateLimit: RateLimitTracker,
   ) {}
-
-  public getTemplate(): RequestTemplate | null {
-    return this.template;
-  }
-
-  public invalidTemplate(): void {
-    this.template = null;
-  }
 
   public attach(page: Page): void {
     if (this.isAttached) return;
@@ -96,8 +51,6 @@ export class XInterceptor {
             );
             return;
           }
-
-          this.template = await buildTemplate(response.request());
 
           const contentType = headers["content-type"] || "";
           if (!contentType.includes("application/json")) {

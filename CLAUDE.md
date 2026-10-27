@@ -32,11 +32,9 @@ Pipeline: `cmd/cli.ts` → `engine/stream.ts` (`XStreamer`) → `engine/browser.
 
 **Session (`XStreamer.start` in `engine/stream.ts`).** It launches the browser, attaches the interceptor to the page, and navigates to the live search URL. If the URL ends up on `/login` or `/i/flow`, the token is invalid. The run then waits for `[data-testid="cellInnerDiv"]` and enters `pollLoop`. The `finally` block closes the browser and the sink.
 
-**Tweets come from two channels that share one listener.**
-1. Passive: `XInterceptor` (`engine/interceptor.ts`) listens to every page `response` and matches `/i/api/graphql/` with `SearchTimeline`. It parses the body with `parser.ts`, which walks `data.search_by_raw_query.search_timeline.timeline.instructions[].entries[]`. It also saves the successful request as a `RequestTemplate` (URL, method, headers, body). Cookies, `sec-*` headers, and anything in `UNREPLAYABLE_HEADERS` are dropped.
-2. Active: `pollLoop` replays that template with `page.evaluate(fetch(..., { credentials: "include" }))`. The page supplies the cookies and the `ct0` CSRF header, so Node never handles auth itself. The refetch's response goes through the same interceptor listener. The `refetch` result carries only status and headers, which feed rate limiting and failure counting.
+**Polling.** `pollLoop` sleeps for `nextDelay()`, then calls `page.reload()` and waits for `[data-testid="cellInnerDiv"]`. Each reload makes X's own JS send a fresh `SearchTimeline` request. `XInterceptor` (`engine/interceptor.ts`) listens to every page `response` and matches `/i/api/graphql/` with `SearchTimeline`. It feeds the rate-limit headers to `RateLimitTracker` and parses the body with `parser.ts`, which walks `data.search_by_raw_query.search_timeline.timeline.instructions[].entries[]`.
 
-**Recovery.** A refetch status other than 200 or 429 counts as a failure. After `MAX_REFETCH_FAILURES` (3) in a row, `pollLoop` clears the template and reloads the page. The reload captures a fresh template from its SearchTimeline response. A 429 is not a failure. It is handled by pacing.
+**No request replay.** Replaying a captured `SearchTimeline` request with in-page `fetch` was tried and removed. X answers the replay with an empty 404 about 70% of the time on the first replay and every time on the second (likely the per-request `x-client-transaction-id`). Each rejected replay still costs rate-limit quota, so replay cost more requests per fresh page than a reload. Do not reintroduce it without a way to get a fresh token per request.
 
 **Pacing (`engine/rate-limit.ts`, `RateLimitTracker`).** It reads `x-rate-limit-{limit,remaining,reset}`. It spreads requests evenly over the remaining budget until reset, keeping 2 requests in reserve. On a 429 it blocks until the reset time. Without reset headers it backs off exponentially, from 60s up to 5 minutes. `--interval` is the floor, and `nextDelay` adds up to 10% jitter.
 
@@ -49,4 +47,4 @@ Pipeline: `cmd/cli.ts` → `engine/stream.ts` (`XStreamer`) → `engine/browser.
 - The project compiles to CommonJS (there is no `"type": "module"`). `cli.ts` uses `__dirname` and `browser.ts` uses `require.resolve`. Switching to ESM means changing both.
 - `browser.ts` downloads Chromium on first run if the Playwright executable is missing. It runs through `playwright-extra` with the stealth plugin.
 - `extractCursor` in `parser.ts` is exported but unused, so cursor pagination isn't wired up.
-- `README.md` lags the code. Its `--interval` minimum and default (10 and 30) differ from `schemas/stream.ts` (2 and 5), and its description of fixed-interval page reloads predates the in-page refetch. Trust the source.
+- `README.md` lags the code. Its `--interval` minimum and default (10 and 30) differ from `schemas/stream.ts` (2 and 5), and its interval wording does not mention rate-limit pacing. Trust the source.
