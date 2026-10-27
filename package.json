@@ -1,6 +1,6 @@
 {
   "name": "@rayhan889/xstream",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Web crawl engine to simulate near real-time stream from X API. Output clean NDJSON format.",
   "bin": {
     "xstream": "dist/cmd/cli.js"
