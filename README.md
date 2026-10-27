@@ -2,7 +2,7 @@
 
 Command line tool that streams X (Twitter) search results as NDJSON.
 
-XStream opens the X search page in a headless Chromium browser, logged in with your own `auth_token` cookie. It reads tweets from the responses X sends to its own web app, reloads the page on a fixed interval, and prints each new tweet as one JSON object per line.
+XStream opens the X search page in a headless Chromium browser, logged in with your own `auth_token` cookie. It reads tweets from the responses X sends to its own web app. It reloads the search page on a paced schedule that follows X's rate limit, and prints each new tweet as one JSON object per line.
 
 It does not use the official X API and needs no API key.
 
@@ -107,21 +107,21 @@ xstream search -k "typescript" --no-headless
 
 ### Options
 
-| Option                   | Description                                                                                     | Default       |
-| ------------------------ | ----------------------------------------------------------------------------------------------- | ------------- |
-| `-k, --keywords <query>` | Search query. Supports X search operators such as `OR`, `from:`, `to:`, and `since:`. Required. |               |
-| `--auth-token <token>`   | Your X `auth_token` cookie value. Required unless `AUTH_TOKEN` is set.                          | `AUTH_TOKEN`  |
-| `-l, --lang <code>`      | Only return tweets in this language. Two letter ISO 639 code, for example `en` or `id`.         | All languages |
-| `--interval <seconds>`   | Seconds between page reloads. Minimum 10.                                                       | `30`          |
-| `--max <count>`          | Stop after this many tweets.                                                                    | No limit      |
-| `--output <destination>` | `stdout` or a file path. Files are appended to, not overwritten.                                | `stdout`      |
-| `--no-headless`          | Show the browser window.                                                                        | Headless      |
-| `-V, --version`          | Print the version.                                                                              |               |
-| `-h, --help`             | Print help.                                                                                     |               |
+| Option                   | Description                                                                                            | Default       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------ | ------------- |
+| `-k, --keywords <query>` | Search query. Supports X search operators such as `OR`, `from:`, `to:`, and `since:`. Required.        |               |
+| `--auth-token <token>`   | Your X `auth_token` cookie value. Required unless `AUTH_TOKEN` is set.                                 | `AUTH_TOKEN`  |
+| `-l, --lang <code>`      | Only return tweets in this language. Two letter ISO 639 code, for example `en` or `id`.                | All languages |
+| `--interval <seconds>`   | Minimum seconds between page reloads. Minimum 2. XStream waits longer when X's rate limit requires it. | `5`           |
+| `--max <count>`          | Stop after this many tweets.                                                                           | No limit      |
+| `--output <destination>` | `stdout` or a file path. Files are appended to, not overwritten.                                       | `stdout`      |
+| `--no-headless`          | Show the browser window.                                                                               | Headless      |
+| `-V, --version`          | Print the version.                                                                                     |               |
+| `-h, --help`             | Print help.                                                                                            |               |
 
 ## Output
 
-XStream writes one JSON object per line (NDJSON). Each tweet is written once per run. Within each reload, tweets are written oldest first.
+XStream writes one JSON object per line (NDJSON). Each tweet is written once per run. Within each reload, tweets are written oldest first. Each reload returns the newest 20 matching tweets (see Limitations).
 
 ```json
 {
@@ -157,7 +157,9 @@ Tweets go to stdout. Logs and status messages go to stderr. Redirecting stdout t
 
 ## Rate limits
 
-When X returns HTTP 429, XStream doubles the reload interval, up to a maximum of 5 minutes. It keeps that interval for the rest of the run.
+After each page load, XStream reads X's rate-limit headers. It spreads the remaining reloads evenly until the quota resets, and keeps 2 requests in reserve. The `--interval` value is the minimum gap between reloads. The actual gap is often longer.
+
+When X returns HTTP 429, XStream waits until the reset time in the response headers. If the headers are missing, it backs off exponentially, from 60 seconds up to 5 minutes.
 
 ## Troubleshooting
 
@@ -176,8 +178,10 @@ System libraries are missing. Run `sudo npx playwright install-deps chromium`.
 ## Limitations
 
 1. XStream depends on the internal format of the X web app. When X changes that format, XStream can stop working until it is updated.
-2. XStream acts as your own account. Heavy use can get the account rate limited or locked. Use a longer `--interval` for long runs.
-3. Scraping may violate the X Terms of Service. You are responsible for how you use this tool.
+2. XStream acts as your own account. Heavy use can get the account rate limited or locked. XStream paces itself against X's rate limit. A longer `--interval` lowers the load further for long runs.
+3. Each reload returns only the newest 20 matching tweets. If more than 20 matching tweets are posted between two reloads, the older ones are never written. Busy queries can lose tweets. Quiet queries do not.
+4. Tweets appear with a delay of up to one poll interval after they are posted.
+5. Scraping may violate the X Terms of Service. You are responsible for how you use this tool.
 
 ## Development
 
