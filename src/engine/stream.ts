@@ -4,10 +4,17 @@ import { Browser, BrowserContext, Page } from "playwright";
 import { Logger } from "tslog";
 import { createLogger } from "@/logger";
 import { launchBrowser } from "./browser";
-import { XInterceptor } from "./interceptor";
+import { RequestTemplate, XInterceptor } from "./interceptor";
+import { RateLimitTracker } from "./rate-limit";
 
-const MAX_INTERVAL_MS = 5 * 60_000;
 const MAX_SEEN_IDS = 10_000;
+const MAX_REFETCH_FAILURES = 3;
+const JITTER_RATIO = 0.1;
+
+interface RefetchResult {
+  status: number;
+  headers: Record<string, string>;
+}
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -33,17 +40,18 @@ export class XStreamer {
   private readonly interceptor: XInterceptor;
   private readonly seenIds: Set<string> = new Set();
   private readonly abortController = new AbortController();
-  private intervalMs: number;
   private emittedCount = 0;
+  private readonly rateLimit = new RateLimitTracker();
+  private readonly minIntervalMs: number;
 
   constructor(streamConfig: StreamConfig, sink: TweetSink) {
     this.streamConfig = streamConfig;
     this.sink = sink;
-    this.intervalMs = streamConfig.interval * 1000;
+    this.minIntervalMs = streamConfig.interval * 1000;
     this.logger = createLogger("XStreamer");
     this.interceptor = new XInterceptor(
       (tweets) => this.handleTweets(tweets),
-      () => this.handleRateLimit(),
+      this.rateLimit,
     );
   }
 
@@ -109,24 +117,91 @@ export class XStreamer {
 
   private async pollLoop(page: Page): Promise<void> {
     const signal = this.abortController.signal;
+    let failures = 0;
 
     while (!signal.aborted) {
-      await sleep(this.intervalMs, signal);
+      const delay = this.nextDelay();
+      this.logger.debug(`Next poll in ${delay}ms`);
+      await sleep(delay, signal);
       if (signal.aborted) break;
 
-      await page
-        .reload({ waitUntil: "domcontentloaded", timeout: 60000 })
-        .catch((error) => {
-          this.logger.warn(`Failed to reload search page: ${error}`);
-        });
-      if (signal.aborted) break;
+      const template = this.interceptor.getTemplate();
+      if (template) {
+        const result = await this.refetch(page, template);
+        this.rateLimit.update(result.headers, result.status);
 
-      await page
-        .waitForSelector('[data-testid="cellInnerDiv"]', { timeout: 30000 })
-        .catch(() => {
-          this.logger.warn("Tweet feed not detected after reload.");
-        });
+        if (result.status === 200 || result.status === 429) {
+          failures = 0;
+          continue;
+        }
+
+        failures++;
+        this.logger.warn(
+          `In-page refetch failed (status ${result.status}), attempt ${failures}/${MAX_REFETCH_FAILURES}.`,
+        );
+        if (failures < MAX_REFETCH_FAILURES) continue;
+      }
+
+      this.logger.info(
+        "Reloading search page to capture a fresh request template.",
+      );
+      failures = 0;
+      this.interceptor.invalidTemplate();
+      await this.reloadPage(page);
     }
+  }
+
+  private nextDelay(): number {
+    const base = this.rateLimit.nextDelay(this.minIntervalMs);
+    return Math.round(base * (1 + Math.random() * JITTER_RATIO));
+  }
+
+  private async refetch(
+    page: Page,
+    template: RequestTemplate,
+  ): Promise<RefetchResult> {
+    const payload = {
+      url: template.url,
+      method: template.method,
+      headers: template.headers,
+      body: template.body?.toString("utf8") ?? null,
+    };
+
+    try {
+      return await page.evaluate(async ({ url, method, headers, body }) => {
+        const csrf = /(?:^|;\s*)ct0=([^;]+)/.exec(document.cookie)?.[1];
+        if (csrf) headers["x-csrf-token"] = csrf;
+
+        const response = await fetch(url, {
+          method,
+          headers,
+          body: body ?? undefined,
+          credentials: "include",
+        });
+        await response.text(); // wait for the full body before resolving
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+        };
+      }, payload);
+    } catch (error) {
+      this.logger.warn(`In-page refetch threw: ${error}`);
+      return { status: 0, headers: {} };
+    }
+  }
+
+  private async reloadPage(page: Page): Promise<void> {
+    await page
+      .reload({ waitUntil: "domcontentloaded", timeout: 60000 })
+      .catch((error) => {
+        this.logger.warn(`Failed to reload search page: ${error}`);
+      });
+
+    await page
+      .waitForSelector('[data-testid="cellInnerDiv"]', { timeout: 30000 })
+      .catch(() => {
+        this.logger.warn("Tweet feed not detected after reload.");
+      });
   }
 
   private assertAuthenticated(page: Page): void {
@@ -174,16 +249,6 @@ export class XStreamer {
       if (oldest !== undefined) this.seenIds.delete(oldest);
     }
     this.seenIds.add(id);
-  }
-
-  private handleRateLimit(): void {
-    const nextInterval = Math.min(this.intervalMs * 2, MAX_INTERVAL_MS);
-    if (nextInterval !== this.intervalMs) {
-      this.intervalMs = nextInterval;
-      this.logger.warn(
-        `Rate limited by X. Backing off polling interval to ${this.intervalMs}ms.`,
-      );
-    }
   }
 
   private buildSearchUrl(keywords: string, lang?: string): string {

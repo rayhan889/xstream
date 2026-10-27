@@ -9,8 +9,8 @@ export const StreamSchema = z.object({
   headless: z.boolean().default(true),
   interval: z.coerce
     .number()
-    .min(10, "Interval must be at least 10 seconds")
-    .default(30),
+    .min(2, "Interval must be at least 2 seconds")
+    .default(5),
   max: z.coerce.number().int().positive().optional(),
   output: z.string().default("stdout"),
 });

@@ -4,32 +4,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Package manager is pnpm (`packageManager: pnpm@10.33.0`).
+Package manager is pnpm (`packageManager: pnpm@10.33.0`). `.nvmrc` pins Node 24; `engines` requires `>=22.12.0`. `pnpm install` runs `husky` through `prepare`, which installs the git hooks.
 
-- `pnpm dev` — run the CLI directly via tsx (`src/cmd/cli.ts`)
-- `pnpm watch` — run the CLI with tsx watch mode
-- `pnpm check` — typecheck only (`tsc --noEmit`)
-- `pnpm build` — compile to `dist/` (`tsc && tsc-alias`, needed to resolve `@/*` path aliases in output)
-- `pnpm start` — run the compiled CLI from `dist/cmd/cli.js`
+- `pnpm dev <args>` — run the CLI from source via tsx, e.g. `pnpm dev search -k "typescript" -l en`
+- `pnpm watch <args>` — same, restarting on file change
+- `pnpm check` — typecheck only (`tsc --noEmit`). It is also the pre-commit hook and the first CI step.
+- `pnpm build` — `clean` + `tsc` + `tsc-alias`. `tsc-alias` is required because it rewrites the `@/*` imports in `dist/`.
+- `pnpm start <args>` — run `dist/cmd/cli.js`
+- Smoke test, as CI runs it: `node dist/cmd/cli.js --version` and `node dist/cmd/cli.js --help`
 
-There is no test suite or lint config in this repo.
+There is no test suite, no lint config, and therefore no single-test command. Verify with `pnpm check`. For changes to scraping, run against real X with a valid token. `parseTweetsFromResponse` (`src/engine/parser.ts`) is pure, so you can check it offline by passing it a saved SearchTimeline JSON body.
 
-Example CLI invocation:
-```
-pnpm dev search -k "typescript" --auth-token $AUTH_TOKEN -l en
-```
-`AUTH_TOKEN` can be set via env var instead of `--auth-token`. `.env` is loaded automatically (`dotenv/config`) at CLI entry.
+`AUTH_TOKEN` can come from the environment or from `--auth-token`. `.env` is loaded by `dotenv/config` at CLI entry and is gitignored. Never print or commit the token.
+
+## Git and CI
+
+- Commits must follow Conventional Commits. The `commit-msg` hook runs commitlint, and the PR-title workflow checks PR titles the same way.
+- Merges to `main` run release-please (`release-please-config.json`). It owns the version bump and changelog, based on `feat`/`fix`/`perf`/`refactor` commits. Don't edit the version in `package.json` or `.release-please-manifest.json` by hand.
+- The release workflow publishes to npm. It uses the Node version from `.nvmrc`.
+- CI (`.github/workflows/ci.yml`) runs `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm build`, the smoke test, and `npm pack --dry-run`, on Node 22, 24, and 26.
 
 ## Architecture
 
-XStream is a CLI tool that scrapes X/Twitter search results by driving a real (stealth) headless browser rather than calling the X API directly.
+Pipeline: `cmd/cli.ts` → `engine/stream.ts` (`XStreamer`) → `engine/browser.ts`, `engine/interceptor.ts`, `engine/parser.ts`, `engine/rate-limit.ts` → a `TweetSink`.
 
-Flow: `cmd/cli.ts` (Commander-based CLI, validates args, builds `StreamConfig` via the Zod schema in `schemas/stream.ts`) → `engine/stream.ts` (`XStreamer`, orchestrates the session) → `engine/browser.ts` (`launchBrowser`, launches `playwright-extra` Chromium with the stealth plugin and injects the `auth_token` cookie for `.x.com`) → `engine/interceptor.ts` (`XInterceptor`, attaches a Playwright `page.on("response")` listener) → `engine/parser.ts` (`parseTweetsFromResponse`, walks X's internal GraphQL `SearchTimeline` response shape to extract `Tweet` objects).
+**Entry (`src/cmd/cli.ts`).** Commander parses the flags. `StreamSchema` (zod, `src/schemas/stream.ts`) validates and coerces them into `StreamConfig`. Validation errors exit with code 2 and runtime errors with code 1. The sink is chosen here: `NdjsonStdoutSink` (`src/sinks/ndjson.ts`), or the file sink defined in `cli.ts`, which appends. The first SIGINT or SIGTERM calls `XStreamer.stop()` for a graceful shutdown. A second signal forces exit.
 
-Key points:
-- Authentication is cookie-based: the caller supplies their own X `auth_token` cookie value (from a logged-in browser session), not an API key.
-- Tweet extraction works by intercepting the browser's own network responses to X's internal GraphQL endpoint (`/i/api/graphql/...SearchTimeline`), not by scraping the DOM or calling a public API. Parsing logic in `parser.ts` is tightly coupled to that undocumented response shape (`data.search_by_raw_query.search_timeline.timeline.instructions[].entries[]...tweet_results.result`) and will break if X changes it.
-- Path alias `@/*` maps to `src/*` (see `tsconfig.json`); `tsc-alias` rewrites these in the compiled `dist/` output since `tsc` alone does not.
-- `XStreamer.start()` currently navigates to the search URL, waits for the feed to appear, and tears down the browser — the interceptor collects tweets into memory but nothing yet reads/exports `capturedTweets` from the CLI.
-- `types.ts`'s `Crawler` interface declares fields (`output`, `max`, `batchSize`, `batchDelay`, `db`) not yet wired into `StreamConfig`/`XStreamer` — these represent planned but unimplemented options (result limits, batching/pagination via cursor, output destination).
-- Each module (`browser.ts`, `interceptor.ts`, `parser.ts`, `stream.ts`) creates its own `tslog` `Logger` instance scoped by name; log level is `DEBUG` unless `NODE_ENV=prod`, in which case it's `INFO`.
+**Session (`XStreamer.start` in `engine/stream.ts`).** It launches the browser, attaches the interceptor to the page, and navigates to the live search URL. If the URL ends up on `/login` or `/i/flow`, the token is invalid. The run then waits for `[data-testid="cellInnerDiv"]` and enters `pollLoop`. The `finally` block closes the browser and the sink.
+
+**Tweets come from two channels that share one listener.**
+1. Passive: `XInterceptor` (`engine/interceptor.ts`) listens to every page `response` and matches `/i/api/graphql/` with `SearchTimeline`. It parses the body with `parser.ts`, which walks `data.search_by_raw_query.search_timeline.timeline.instructions[].entries[]`. It also saves the successful request as a `RequestTemplate` (URL, method, headers, body). Cookies, `sec-*` headers, and anything in `UNREPLAYABLE_HEADERS` are dropped.
+2. Active: `pollLoop` replays that template with `page.evaluate(fetch(..., { credentials: "include" }))`. The page supplies the cookies and the `ct0` CSRF header, so Node never handles auth itself. The refetch's response goes through the same interceptor listener. The `refetch` result carries only status and headers, which feed rate limiting and failure counting.
+
+**Recovery.** A refetch status other than 200 or 429 counts as a failure. After `MAX_REFETCH_FAILURES` (3) in a row, `pollLoop` clears the template and reloads the page. The reload captures a fresh template from its SearchTimeline response. A 429 is not a failure. It is handled by pacing.
+
+**Pacing (`engine/rate-limit.ts`, `RateLimitTracker`).** It reads `x-rate-limit-{limit,remaining,reset}`. It spreads requests evenly over the remaining budget until reset, keeping 2 requests in reserve. On a 429 it blocks until the reset time. Without reset headers it backs off exponentially, from 60s up to 5 minutes. `--interval` is the floor, and `nextDelay` adds up to 10% jitter.
+
+**Dedup and output.** `handleTweets` drops IDs already in `seenIds`, which holds at most 10,000 entries and evicts the oldest. Each batch is sorted oldest first. Once `--max` is reached, the run stops.
+
+## Invariants and gotchas
+
+- stdout carries only NDJSON tweets. Logs go to stderr through the tslog transport in `src/logger.ts`. Don't `console.log` or write to stdout anywhere else.
+- Each module gets its logger from `createLogger(name)`. The level is DEBUG unless `NODE_ENV=prod`, which sets INFO.
+- The project compiles to CommonJS (there is no `"type": "module"`). `cli.ts` uses `__dirname` and `browser.ts` uses `require.resolve`. Switching to ESM means changing both.
+- `browser.ts` downloads Chromium on first run if the Playwright executable is missing. It runs through `playwright-extra` with the stealth plugin.
+- `extractCursor` in `parser.ts` is exported but unused, so cursor pagination isn't wired up.
+- `README.md` lags the code. Its `--interval` minimum and default (10 and 30) differ from `schemas/stream.ts` (2 and 5), and its description of fixed-interval page reloads predates the in-page refetch. Trust the source.
