@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2](https://github.com/rayhan889/xstream/compare/v0.1.1...v0.1.2) (2026-10-27)
+
+
+### Bug Fixes
+
+* refetch on load and replay ([1c16079](https://github.com/rayhan889/xstream/commit/1c16079102d4f916a96c24b326ce7eaaf6aa0a44))
+* refetch on load and replay ([3efb4d3](https://github.com/rayhan889/xstream/commit/3efb4d3aa6036d64d21a281c189e828ee99376cc))
+
 ## [0.1.1](https://github.com/rayhan889/xstream/compare/v0.1.0...v0.1.1) (2026-10-27)
 
 
