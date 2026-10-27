@@ -98,8 +98,8 @@ program
   .option("--no-headless", "Run with visible browser UI (default: headless)")
   .option(
     "--interval <seconds>",
-    "Polling interval between refetches, in seconds (min 10)",
-    "30",
+    "Minimum seconds between polls (min 2). Actual spacing adapts to X's rate limit.",
+    "5",
   )
   .option("--max <count>", "Stop after emitting this many tweets")
   .option(
