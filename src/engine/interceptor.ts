@@ -1,7 +1,10 @@
 import { Tweet } from "@/types";
-import { Page } from "playwright";
+import { Page, Response } from "playwright";
 import { createLogger } from "@/logger";
-import { parseTweetsFromResponse } from "@/engine/parser";
+import {
+  extractEmbeddedSearchResponses,
+  parseTweetsFromResponse,
+} from "@/engine/parser";
 import { RateLimitTracker } from "./rate-limit";
 
 export class XInterceptor {
@@ -19,6 +22,14 @@ export class XInterceptor {
     page.on("response", async (response) => {
       try {
         const url = response.url();
+
+        if (
+          response.request().resourceType() === "document" &&
+          new URL(url).pathname === "/search"
+        ) {
+          await this.handleSearchDocument(response);
+          return;
+        }
 
         if (url.includes("/i/api/graphql/") && url.includes("SearchTimeline")) {
           this.logger.debug(
@@ -74,5 +85,21 @@ export class XInterceptor {
 
     this.isAttached = true;
     this.logger.debug("Tweet interceptor attached to page");
+  }
+
+  private async handleSearchDocument(response: Response): Promise<void> {
+    const status = response.status();
+    if (status !== 200) {
+      this.logger.warn(`Non-200 response (${status}) from search page`);
+      return;
+    }
+
+    const bodies = extractEmbeddedSearchResponses(await response.text());
+    const tweets = bodies.flatMap((body) => parseTweetsFromResponse(body));
+
+    this.logger.debug(
+      `Extracted ${tweets.length} tweets from ${bodies.length} embedded response(s)`,
+    );
+    if (tweets.length > 0) this.onTweets(tweets);
   }
 }
