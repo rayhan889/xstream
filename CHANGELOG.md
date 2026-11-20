@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3](https://github.com/rayhan889/xstream/compare/v0.1.2...v0.1.3) (2026-11-20)
+
+
+### Bug Fixes
+
+* streamtimeline xhr ([f0c6b57](https://github.com/rayhan889/xstream/commit/f0c6b5741da2dc6c34f62679ea8613ea9c548c73))
+* streamtimeline xhr ([add84ec](https://github.com/rayhan889/xstream/commit/add84eca1bd2b6ac559a8bf68bf57d075b7edef5))
+
 ## [0.1.2](https://github.com/rayhan889/xstream/compare/v0.1.1...v0.1.2) (2026-10-27)
 
 
