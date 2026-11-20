@@ -33,11 +33,39 @@ export function parseTweetsFromResponse(responseBody: any): Tweet[] {
   return tweets;
 }
 
+const EMBEDDED_MARKER = String.raw`value:"{\"data\":{\"search_by_raw_query\"`;
+
+export function extractEmbeddedSearchResponses(html: string): unknown[] {
+  const bodies: unknown[] = [];
+  let from = 0;
+
+  while (true) {
+    const marker = html.indexOf(EMBEDDED_MARKER, from);
+    if (marker === -1) break;
+
+    const start = marker + "value:".length;
+    let end = start + 1;
+    while (end < html.length && html[end] !== '"') {
+      end += html[end] === "\\" ? 2 : 1;
+    }
+    from = end + 1;
+
+    try {
+      bodies.push(JSON.parse(JSON.parse(html.slice(start, end + 1))));
+    } catch (error) {
+      logger.debug(`Failed to parse embedded search response: ${error}`);
+    }
+  }
+
+  return bodies;
+}
+
 function extractTweetFromEntry(entry: any): Tweet | null {
   try {
     const tweetResult =
       entry?.content?.itemContent?.tweet_results?.result ||
-      entry?.item?.itemContent?.tweet_results?.result;
+      entry?.item?.itemContent?.tweet_results?.result ||
+      entry?.content?.content?.tweet_results?.result;
 
     if (!tweetResult) {
       return null;
@@ -45,14 +73,15 @@ function extractTweetFromEntry(entry: any): Tweet | null {
 
     const actualTweet = tweetResult.tweet || tweetResult;
 
-    if (!actualTweet.legacy || !actualTweet.core) {
+    if (!actualTweet.core || !(actualTweet.legacy || actualTweet.details)) {
       return null;
     }
 
-    const legacy = actualTweet.legacy;
+    const legacy = actualTweet.legacy ?? {};
+    const details = actualTweet.details ?? {};
+    const counts = actualTweet.counts ?? {};
 
     const userResult = actualTweet.core?.user_results?.result;
-    // logger.debug(`user result: ${JSON.stringify(userResult, null, 2)}`);
 
     if (!userResult) {
       return null;
@@ -74,14 +103,17 @@ function extractTweetFromEntry(entry: any): Tweet | null {
     return {
       id: actualTweet.rest_id || legacy.id_str || "",
       conversationId: legacy.conversation_id_str || "",
-      fullText: legacy.full_text || "",
+      fullText: details.full_text || legacy.full_text || "",
       authorHandle,
       authorName,
-      likeCount: legacy.favorite_count || 0,
-      replyCount: legacy.reply_count || 0,
-      retweetCount: legacy.retweet_count || 0,
+      likeCount: counts.favorite_count ?? legacy.favorite_count ?? 0,
+      replyCount: counts.reply_count ?? legacy.reply_count ?? 0,
+      retweetCount: counts.retweet_count ?? legacy.retweet_count ?? 0,
       tweetUrl: `https://x.com/${authorHandle}/status/${tweetId}`,
-      postedAt: parseTwitterDate(legacy.created_at),
+      postedAt:
+        typeof details.created_at_ms === "number"
+          ? new Date(details.created_at_ms).toISOString()
+          : parseTwitterDate(legacy.created_at),
       scrapedAt: new Date().toISOString(),
     };
   } catch (error) {

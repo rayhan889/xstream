@@ -72,6 +72,7 @@ export class XStreamer {
       );
 
       this.logger.info(`Navigating to search URL: ${searchUrl}`);
+      const timelineResponse = this.waitForSearchTimeline(this.page);
       await this.page.goto(searchUrl, {
         waitUntil: "domcontentloaded",
         timeout: 60000,
@@ -79,14 +80,11 @@ export class XStreamer {
 
       this.assertAuthenticated(this.page);
 
-      const feedAppeared = await this.page
-        .waitForSelector('[data-testid="cellInnerDiv"]', { timeout: 30000 })
-        .then(() => true)
-        .catch(() => false);
+      const feedAppeared = await timelineResponse;
 
       if (!feedAppeared) {
         this.logger.error(
-          "Failed to detect the tweet feed. The page may have changed or the search returned no results.",
+          "No SearchTimeline response received. The token may be invalid, X may have blocked the session, or the API may have changed.",
         );
         throw new Error(
           "Tweet feed not found. Please check your keywords and try again.",
@@ -128,17 +126,36 @@ export class XStreamer {
   }
 
   private async reloadPage(page: Page): Promise<void> {
+    const timelineResponse = this.waitForSearchTimeline(page);
+
     await page
       .reload({ waitUntil: "domcontentloaded", timeout: 60000 })
       .catch((error) => {
         this.logger.warn(`Failed to reload search page: ${error}`);
       });
 
-    await page
-      .waitForSelector('[data-testid="cellInnerDiv"]', { timeout: 30000 })
-      .catch(() => {
-        this.logger.warn("Tweet feed not detected after reload.");
-      });
+    if (!(await timelineResponse)) {
+      this.logger.warn("No SearchTimeline response after reload.");
+    }
+  }
+
+  private waitForSearchTimeline(page: Page): Promise<boolean> {
+    return page
+      .waitForResponse(
+        (response) => {
+          const url = response.url();
+          const isSearchDocument =
+            response.request().resourceType() === "document" &&
+            new URL(url).pathname === "/search";
+          return (
+            isSearchDocument ||
+            (url.includes("/graphql/") && url.includes("SearchTimeline"))
+          );
+        },
+        { timeout: 30000 },
+      )
+      .then(() => true)
+      .catch(() => false);
   }
 
   private assertAuthenticated(page: Page): void {
